@@ -8,12 +8,18 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
+#include <sstream>
 #include <cstring>
 
 #include <algorithm>
+#include <functional>
 #include <string>
 #include <sstream>
 #include <fstream>
+#include <regex>
+#include <thread>
+#include <utility> // for pair
+#include <chrono>
 #include <thread>
 
 #include <dirent.h>
@@ -28,7 +34,11 @@
 #include <linux/uvcvideo.h>
 #include <linux/videodev2.h>
 
+#pragma GCC diagnostic ignored "-Wpedantic"
 #include <libusb.h>
+#pragma GCC diagnostic pop
+
+#pragma GCC diagnostic ignored "-Woverflow"
 
 namespace rsimpl
 {
@@ -75,16 +85,17 @@ namespace rsimpl
         struct subdevice
         {
             std::string dev_name;   // Device name (typically of the form /dev/video*)
-            int busnum, devnum;     // USB device bus number and device number (needed for F200/SR300 direct USB controls)
+            int busnum, devnum, parent_devnum;     // USB device bus number and device number (needed for F200/SR300 direct USB controls)
             int vid, pid, mi;       // Vendor ID, product ID, and multiple interface index
             int fd;                 // File descriptor for this device
             std::vector<buffer> buffers;
 
             int width, height, format, fps;
-            std::function<void(const void *)> callback;
+            video_channel_callback callback = nullptr;
+            data_channel_callback  channel_data_callback = nullptr;    // handle non-uvc data produced by device
             bool is_capturing;
 
-            subdevice(const std::string & name) : dev_name("/dev/" + name), vid(), pid(), fd(), width(), height(), format(), is_capturing()
+            subdevice(const std::string & name) : dev_name("/dev/" + name), vid(), pid(), fd(), width(), height(), format(), callback(nullptr), channel_data_callback(nullptr), is_capturing()
             {
                 struct stat st;
                 if(stat(dev_name.c_str(), &st) < 0)
@@ -94,13 +105,26 @@ namespace rsimpl
                 }
                 if(!S_ISCHR(st.st_mode)) throw std::runtime_error(dev_name + " is no device");
 
-                // TODO: Might not always be exactly three dirs up, might need to walk upwards until we find busnum and devnum
-                std::ostringstream ss; ss << "/sys/dev/char/" << major(st.st_rdev) << ":" << minor(st.st_rdev) << "/";
+                // Search directory and up to three parent directories to find busnum/devnum
+                std::ostringstream ss; ss << "/sys/dev/char/" << major(st.st_rdev) << ":" << minor(st.st_rdev) << "/device/";
                 auto path = ss.str();
-                if(!(std::ifstream(path + "../../../busnum") >> busnum))
-                    throw std::runtime_error("Failed to read busnum");
-                if(!(std::ifstream(path + "../../../devnum") >> devnum))
-                    throw std::runtime_error("Failed to read devnum");
+                bool good = false;
+                for(int i=0; i<=3; ++i)
+                {
+                    if(std::ifstream(path + "busnum") >> busnum)
+                    {
+                        if(std::ifstream(path + "devnum") >> devnum)
+                        {
+                            if(std::ifstream(path + "../devnum") >> parent_devnum)
+                            {
+                                good = true;
+                                break;
+                            }
+                        }
+                    }
+                    path += "../";
+                }
+                if(!good) throw std::runtime_error("Failed to read busnum/devnum");
 
                 std::string modalias;
                 if(!(std::ifstream("/sys/class/video4linux/" + name + "/device/modalias") >> modalias))
@@ -161,23 +185,28 @@ namespace rsimpl
 
             void get_control(const extension_unit & xu, uint8_t control, void * data, size_t size)
             {
-	        uvc_xu_control_query q = {static_cast<uint8_t>(xu.unit), control, UVC_GET_CUR, static_cast<uint16_t>(size), reinterpret_cast<uint8_t *>(data)};
+            uvc_xu_control_query q = {static_cast<uint8_t>(xu.unit), control, UVC_GET_CUR, static_cast<uint16_t>(size), reinterpret_cast<uint8_t *>(data)};
                 if(xioctl(fd, UVCIOC_CTRL_QUERY, &q) < 0) throw_error("UVCIOC_CTRL_QUERY:UVC_GET_CUR");
             }
 
             void set_control(const extension_unit & xu, uint8_t control, void * data, size_t size)
             {
-	        uvc_xu_control_query q = {static_cast<uint8_t>(xu.unit), control, UVC_SET_CUR, static_cast<uint16_t>(size), reinterpret_cast<uint8_t *>(data)};
+            uvc_xu_control_query q = {static_cast<uint8_t>(xu.unit), control, UVC_SET_CUR, static_cast<uint16_t>(size), reinterpret_cast<uint8_t *>(data)};
                 if(xioctl(fd, UVCIOC_CTRL_QUERY, &q) < 0) throw_error("UVCIOC_CTRL_QUERY:UVC_SET_CUR");
             }
 
-            void set_format(int width, int height, int fourcc, int fps, std::function<void(const void * data)> callback)
+            void set_format(int width, int height, int fourcc, int fps, video_channel_callback callback)
             {
                 this->width = width;
                 this->height = height;
                 this->format = fourcc;
                 this->fps = fps;
                 this->callback = callback;
+            }
+
+            void set_data_channel_cfg(data_channel_callback callback)
+            {                
+                this->channel_data_callback = callback;
             }
 
             void start_capture()
@@ -215,7 +244,7 @@ namespace rsimpl
                     }
 
                     buffers.resize(req.count);
-                    for(int i=0; i<buffers.size(); ++i)
+                    for(size_t i = 0; i < buffers.size(); ++i)
                     {
                         v4l2_buffer buf = {};
                         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -229,7 +258,7 @@ namespace rsimpl
                     }
 
                     // Start capturing
-                    for(int i = 0; i < buffers.size(); ++i)
+                    for(size_t i = 0; i < buffers.size(); ++i)
                     {
                         v4l2_buffer buf = {};
                         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -260,7 +289,7 @@ namespace rsimpl
                     v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
                     if(xioctl(fd, VIDIOC_STREAMOFF, &type) < 0) warn_error("VIDIOC_STREAMOFF");
 
-                    for(int i = 0; i < buffers.size(); i++)
+                    for(size_t i = 0; i < buffers.size(); i++)
                     {
                         if(munmap(buffers[i].start, buffers[i].length) < 0) warn_error("munmap");
                     }
@@ -276,6 +305,7 @@ namespace rsimpl
                         else warn_error("VIDIOC_REQBUFS");
                     }
 
+                    callback = nullptr;
                     is_capturing = false;
                 }
             }
@@ -310,11 +340,40 @@ namespace rsimpl
                             if(errno == EAGAIN) return;
                             throw_error("VIDIOC_DQBUF");
                         }
-                        assert(buf.index < sub->buffers.size());
 
-                        sub->callback(sub->buffers[buf.index].start);
+                        sub->callback(sub->buffers[buf.index].start,
+                                [sub, buf]() mutable {
+                                    if(xioctl(sub->fd, VIDIOC_QBUF, &buf) < 0) throw_error("VIDIOC_QBUF");
+                                });
+                    }
+                }
+            }            
 
-                        if(xioctl(sub->fd, VIDIOC_QBUF, &buf) < 0) throw_error("VIDIOC_QBUF");
+            static void poll_interrupts(libusb_device_handle *handle, const std::vector<subdevice *> & subdevices, uint16_t timeout)
+            {
+                static const unsigned short interrupt_buf_size = 0x400;
+                uint8_t buffer[interrupt_buf_size];                       /* 64 byte transfer buffer  - dedicated channel*/
+                int num_bytes             = 0;                           /* Actual bytes transferred. */
+
+                // TODO - replace hard-coded values : 0x82 and 1000
+                int res = libusb_interrupt_transfer(handle, 0x84, buffer, interrupt_buf_size, &num_bytes, timeout);
+                if (0 == res)
+                {
+                    // Propagate the data to device layer
+                    for(auto & sub : subdevices)
+                        if (sub->channel_data_callback)
+                            sub->channel_data_callback(buffer, num_bytes);
+                }
+                else
+                {
+                    switch (res)
+                    {
+                    case LIBUSB_ERROR_TIMEOUT :
+                        LOG_WARNING("interrupt e.p. timeout");
+                        break;
+                    default:
+                        throw std::runtime_error(to_string() << "USB Interrupt end-point error " << libusb_strerror((libusb_error)res));
+                        break;
                     }
                 }
             }
@@ -325,13 +384,15 @@ namespace rsimpl
             const std::shared_ptr<context> parent;
             std::vector<std::unique_ptr<subdevice>> subdevices;
             std::thread thread;
+            std::thread data_channel_thread;
             volatile bool stop;
+            volatile bool data_stop;
 
             libusb_device * usb_device;
             libusb_device_handle * usb_handle;
             std::vector<int> claimed_interfaces;
 
-            device(std::shared_ptr<context> parent) : parent(parent), stop(), usb_device(), usb_handle() {} // TODO: Init
+            device(std::shared_ptr<context> parent) : parent(parent), stop(), data_stop(), usb_device(), usb_handle() {}
             ~device()
             {
                 stop_streaming();
@@ -341,6 +402,7 @@ namespace rsimpl
                     int status = libusb_release_interface(usb_handle, interface_number);
                     if(status < 0) LOG_ERROR("libusb_release_interface(...) returned " << libusb_error_name(status));
                 }
+
                 if(usb_handle) libusb_close(usb_handle);
                 if(usb_device) libusb_unref_device(usb_device);
             }
@@ -357,13 +419,14 @@ namespace rsimpl
             void start_streaming()
             {
                 std::vector<subdevice *> subs;
+
                 for(auto & sub : subdevices)
                 {
                     if(sub->callback)
                     {
                         sub->start_capture();
                         subs.push_back(sub.get());
-                    }
+                    }                
                 }
 
                 thread = std::thread([this, subs]()
@@ -381,6 +444,41 @@ namespace rsimpl
                     stop = false;
 
                     for(auto & sub : subdevices) sub->stop_capture();
+                }                
+            }
+
+            void start_data_acquisition()
+            {
+                std::vector<subdevice *> data_channel_subs;
+                for (auto & sub : subdevices)
+                {                   
+                    if (sub->channel_data_callback)
+                    {                        
+                        data_channel_subs.push_back(sub.get());
+                    }
+                }
+                
+                // Motion events polling pipe
+                if (claimed_interfaces.size())
+                {
+                    data_channel_thread = std::thread([this, data_channel_subs]()
+                    {
+                        // Polling 100ms timeout
+                        while (!data_stop)
+                        {
+                            subdevice::poll_interrupts(this->usb_handle, data_channel_subs, 100);
+                        }
+                    });
+                }
+            }
+
+            void stop_data_acquisition()
+            {
+                if (data_channel_thread.joinable())
+                {
+                    data_stop = true;
+                    data_channel_thread.join();
+                    data_stop = false;
                 }
             }
         };
@@ -392,6 +490,24 @@ namespace rsimpl
         int get_vendor_id(const device & device) { return device.subdevices[0]->get_vid(); }
         int get_product_id(const device & device) { return device.subdevices[0]->get_pid(); }
 
+        std::string get_usb_port_id(const device & device)
+        {
+            std::string usb_bus = std::to_string(libusb_get_bus_number(device.usb_device));
+
+            // As per the USB 3.0 specs, the current maximum limit for the depth is 7.
+            const int max_usb_depth = 8;
+            uint8_t usb_ports[max_usb_depth];
+            std::stringstream port_path;
+            int port_count = libusb_get_port_numbers(device.usb_device, usb_ports, max_usb_depth);
+
+            for (size_t i = 0; i < port_count; ++i)
+            {
+                port_path << "-" << std::to_string(usb_ports[i]);
+            }
+
+            return usb_bus + port_path.str();
+        }
+
         void get_control(const device & device, const extension_unit & xu, uint8_t ctrl, void * data, int len)
         {
             device.subdevices[xu.subdevice]->get_control(xu, ctrl, data, len);
@@ -401,7 +517,7 @@ namespace rsimpl
             device.subdevices[xu.subdevice]->set_control(xu, ctrl, data, len);
         }
 
-        void claim_interface(device & device, const guid & interface_guid, int interface_number)
+        void claim_interface(device & device, const guid & /*interface_guid*/, int interface_number)
         {
             if(!device.usb_handle)
             {
@@ -413,6 +529,10 @@ namespace rsimpl
             if(status < 0) throw std::runtime_error(to_string() << "libusb_claim_interface(...) returned " << libusb_error_name(status));
             device.claimed_interfaces.push_back(interface_number);
         }
+        void claim_aux_interface(device & device, const guid & interface_guid, int interface_number)
+        {
+            claim_interface(device, interface_guid, interface_number);
+        }
 
         void bulk_transfer(device & device, unsigned char endpoint, void * data, int length, int *actual_length, unsigned int timeout)
         {
@@ -421,12 +541,24 @@ namespace rsimpl
             if(status < 0) throw std::runtime_error(to_string() << "libusb_bulk_transfer(...) returned " << libusb_error_name(status));
         }
 
-        void set_subdevice_mode(device & device, int subdevice_index, int width, int height, uint32_t fourcc, int fps, std::function<void(const void * frame)> callback)
+        void interrupt_transfer(device & device, unsigned char endpoint, void * data, int length, int *actual_length, unsigned int timeout)
+        {
+            if(!device.usb_handle) throw std::logic_error("called uvc::interrupt_transfer before uvc::claim_interface");
+            int status = libusb_interrupt_transfer(device.usb_handle, endpoint, (unsigned char *)data, length, actual_length, timeout);
+            if(status < 0) throw std::runtime_error(to_string() << "libusb_interrupt_transfer(...) returned " << libusb_error_name(status));
+        }
+
+        void set_subdevice_mode(device & device, int subdevice_index, int width, int height, uint32_t fourcc, int fps, video_channel_callback callback)
         {
             device.subdevices[subdevice_index]->set_format(width, height, (const big_endian<int> &)fourcc, fps, callback);
         }
 
-        void start_streaming(device & device, int num_transfer_bufs)
+        void set_subdevice_data_channel_handler(device & device, int subdevice_index, data_channel_callback callback)
+        {
+            device.subdevices[subdevice_index]->set_data_channel_cfg(callback);
+        }
+
+        void start_streaming(device & device, int /*num_transfer_bufs*/)
         {
             device.start_streaming();
         }
@@ -434,7 +566,17 @@ namespace rsimpl
         void stop_streaming(device & device)
         {
             device.stop_streaming();
-        }        
+        }       
+
+        void start_data_acquisition(device & device)
+        {
+            device.start_data_acquisition();
+        }
+
+        void stop_data_acquisition(device & device)
+        {
+            device.stop_data_acquisition();
+        }
 
         static uint32_t get_cid(rs_option option)
         {
@@ -443,34 +585,47 @@ namespace rsimpl
             case RS_OPTION_COLOR_BACKLIGHT_COMPENSATION: return V4L2_CID_BACKLIGHT_COMPENSATION;
             case RS_OPTION_COLOR_BRIGHTNESS: return V4L2_CID_BRIGHTNESS;
             case RS_OPTION_COLOR_CONTRAST: return V4L2_CID_CONTRAST;
-            case RS_OPTION_COLOR_EXPOSURE: return V4L2_CID_EXPOSURE; // Is this actually valid? I'm getting a lot of VIDIOC error 22s...
+            case RS_OPTION_COLOR_EXPOSURE: return V4L2_CID_EXPOSURE_ABSOLUTE; // Is this actually valid? I'm getting a lot of VIDIOC error 22s...
             case RS_OPTION_COLOR_GAIN: return V4L2_CID_GAIN;
             case RS_OPTION_COLOR_GAMMA: return V4L2_CID_GAMMA;
             case RS_OPTION_COLOR_HUE: return V4L2_CID_HUE;
             case RS_OPTION_COLOR_SATURATION: return V4L2_CID_SATURATION;
             case RS_OPTION_COLOR_SHARPNESS: return V4L2_CID_SHARPNESS;
             case RS_OPTION_COLOR_WHITE_BALANCE: return V4L2_CID_WHITE_BALANCE_TEMPERATURE;
-            case RS_OPTION_COLOR_ENABLE_AUTO_EXPOSURE: return V4L2_CID_AUTOGAIN; // Automatic gain/exposure control
+            case RS_OPTION_COLOR_ENABLE_AUTO_EXPOSURE: return V4L2_CID_EXPOSURE_AUTO; // Automatic gain/exposure control
             case RS_OPTION_COLOR_ENABLE_AUTO_WHITE_BALANCE: return V4L2_CID_AUTO_WHITE_BALANCE;
+            case RS_OPTION_FISHEYE_GAIN: return V4L2_CID_GAIN;
             default: throw std::runtime_error(to_string() << "no v4l2 cid for option " << option);
             }
         }
-        
+
         void set_pu_control(device & device, int subdevice, rs_option option, int value)
         {
             struct v4l2_control control = {get_cid(option), value};
+            if (RS_OPTION_COLOR_ENABLE_AUTO_EXPOSURE==option) { control.value = value ? V4L2_EXPOSURE_APERTURE_PRIORITY : V4L2_EXPOSURE_MANUAL; }
             if (xioctl(device.subdevices[subdevice]->fd, VIDIOC_S_CTRL, &control) < 0) throw_error("VIDIOC_S_CTRL");
         }
 
         int get_pu_control(const device & device, int subdevice, rs_option option)
         {
-            struct v4l2_control control = {get_cid(option)};
+            struct v4l2_control control = {get_cid(option), 0};
             if (xioctl(device.subdevices[subdevice]->fd, VIDIOC_G_CTRL, &control) < 0) throw_error("VIDIOC_G_CTRL");
+            if (RS_OPTION_COLOR_ENABLE_AUTO_EXPOSURE==option)  { control.value = (V4L2_EXPOSURE_MANUAL==control.value) ? 0 : 1; }
             return control.value;
         }
 
-        void get_pu_control_range(const device & device, int subdevice, rs_option option, int * min, int * max)
+        void get_pu_control_range(const device & device, int subdevice, rs_option option, int * min, int * max, int * step, int * def)
         {
+            // Auto controls range is trimed to {0,1} range
+            if(option >= RS_OPTION_COLOR_ENABLE_AUTO_EXPOSURE && option <= RS_OPTION_COLOR_ENABLE_AUTO_WHITE_BALANCE)
+            {
+                if(min)  *min  = 0;
+                if(max)  *max  = 1;
+                if(step) *step = 1;
+                if(def)  *def  = 1;
+                return;
+            }
+
             struct v4l2_queryctrl query = {};
             query.id = get_cid(option);
             if (xioctl(device.subdevices[subdevice]->fd, VIDIOC_QUERYCTRL, &query) < 0)
@@ -480,10 +635,74 @@ namespace rsimpl
                 // TODO: Figure out what can be done about these options and make this work
                 query.minimum = query.maximum = 0;
             }
-            if(min) *min = query.minimum;
-            if(max) *max = query.maximum;
+            if(min)  *min  = query.minimum;
+            if(max)  *max  = query.maximum;
+            if(step) *step = query.step;
+            if(def)  *def  = query.default_value;
         }
 
+        void get_extension_control_range(const device & device, const extension_unit & xu, char control, int * min, int * max, int * step, int * def)
+        {
+            __u16 size = 0;
+            __u8 value = 0; /* all of the real sense extended controls are one byte,
+                            checking return value for UVC_GET_LEN and allocating
+                            appropriately might be better */
+            __u8 * data = (__u8 *)&value;
+            struct uvc_xu_control_query xquery;
+            memset(&xquery, 0, sizeof(xquery));
+            xquery.query = UVC_GET_LEN;
+            xquery.size = 2; /* size seems to always be 2 for the LEN query, but
+                             doesn't seem to be documented. Use result for size
+                             in all future queries of the same control number */
+            xquery.selector = control;
+            xquery.unit = xu.unit;
+            xquery.data = (__u8 *)&size;
+
+            if(-1 == ioctl(device.subdevices[xu.subdevice]->fd,UVCIOC_CTRL_QUERY,&xquery)){
+                throw std::runtime_error(to_string() << " ioctl failed on UVC_GET_LEN");
+            }
+
+            xquery.query = UVC_GET_MIN;
+            xquery.size = size;
+            xquery.selector = control;
+            xquery.unit = xu.unit;
+            xquery.data = data;
+            if(-1 == ioctl(device.subdevices[xu.subdevice]->fd,UVCIOC_CTRL_QUERY,&xquery)){
+                throw std::runtime_error(to_string() << " ioctl failed on UVC_GET_MIN");
+            }
+            *min = value;
+
+            xquery.query = UVC_GET_MAX;
+            xquery.size = size;
+            xquery.selector = control;
+            xquery.unit = xu.unit;
+            xquery.data = data;
+            if(-1 == ioctl(device.subdevices[xu.subdevice]->fd,UVCIOC_CTRL_QUERY,&xquery)){
+                throw std::runtime_error(to_string() << " ioctl failed on UVC_GET_MAX");
+            }
+            *max = value;
+
+            xquery.query = UVC_GET_DEF;
+            xquery.size = size;
+            xquery.selector = control;
+            xquery.unit = xu.unit;
+            xquery.data = data;
+            if(-1 == ioctl(device.subdevices[xu.subdevice]->fd,UVCIOC_CTRL_QUERY,&xquery)){
+                throw std::runtime_error(to_string() << " ioctl failed on UVC_GET_DEF");
+            }
+            *def = value;
+
+            xquery.query = UVC_GET_RES;
+            xquery.size = size;
+            xquery.selector = control;
+            xquery.unit = xu.unit;
+            xquery.data = data;
+            if(-1 == ioctl(device.subdevices[xu.subdevice]->fd,UVCIOC_CTRL_QUERY,&xquery)){
+                throw std::runtime_error(to_string() << " ioctl failed on UVC_GET_CUR");
+            }
+            *step = value;
+
+        }
         /////////////
         // context //
         /////////////
@@ -493,8 +712,19 @@ namespace rsimpl
             return std::make_shared<context>();
         }
 
+        bool is_device_connected(device & device, int vid, int pid)
+        {
+            for (auto& sub : device.subdevices)
+            {
+                if (sub->vid == vid && sub->pid == pid)
+                    return true;
+            }
+
+            return false;
+        }
+
         std::vector<std::shared_ptr<device>> query_devices(std::shared_ptr<context> context)
-        {                                            
+        {
             // Enumerate all subdevices present on the system
             std::vector<std::unique_ptr<subdevice>> subdevices;
             DIR * dir = opendir("/sys/class/video4linux");
@@ -516,8 +746,15 @@ namespace rsimpl
                         continue;
                 }
 
-                std::unique_ptr<subdevice> sub(new subdevice(name));
-                subdevices.push_back(move(sub));
+                try
+                {
+                    std::unique_ptr<subdevice> sub(new subdevice(name));
+                    subdevices.push_back(move(sub));
+                }
+                catch(const std::exception & e)
+                {
+                    LOG_INFO("Not a USB video device: " << e.what());
+                }
             }
             closedir(dir);
 
@@ -540,6 +777,8 @@ namespace rsimpl
                 }
                 if(is_new_device)
                 {
+                    if (sub->vid == VID_INTEL_CAMERA && sub->pid == ZR300_FISHEYE_PID)  // avoid inserting fisheye camera as a device
+                        continue;
                     devices.push_back(std::make_shared<device>(context));
                     devices.back()->subdevices.push_back(move(sub));
                 }
@@ -554,6 +793,25 @@ namespace rsimpl
                 });
             }
 
+
+            // Insert fisheye camera as subDevice of ZR300
+            for(auto & sub : subdevices)
+            {
+                if (!sub)
+                    continue;
+
+                for(auto & dev : devices)
+                {
+                    if (dev->subdevices[0]->vid == VID_INTEL_CAMERA && dev->subdevices[0]->pid == ZR300_CX3_PID && 
+                        sub->vid == VID_INTEL_CAMERA && sub->pid == ZR300_FISHEYE_PID && dev->subdevices[0]->parent_devnum == sub->parent_devnum)
+                    {
+                        dev->subdevices.push_back(move(sub));
+                        break;
+                    }
+                }
+            }
+
+
             // Obtain libusb_device_handle for each device
             libusb_device ** list;
             int status = libusb_get_device_list(context->usb_context, &list);
@@ -566,13 +824,34 @@ namespace rsimpl
 
                 // Look for a video device whose busnum/devnum matches this USB device
                 for(auto & dev : devices)
-                {                    
+                {
+                    if (dev->subdevices.size() >=4)      // Make sure that four subdevices present
+                    {
+                        auto parent_device = libusb_get_parent(usb_device);
+                        if (parent_device)
+                        {
+                            int parent_devnum = libusb_get_device_address(libusb_get_parent(usb_device));
+
+                            // First, handle the special case of FishEye
+                            bool bFishEyeDevice = ((busnum == dev->subdevices[3]->busnum) && (parent_devnum == dev->subdevices[3]->parent_devnum));
+                            if(bFishEyeDevice && !dev->usb_device)
+                            {
+                                dev->usb_device = usb_device;
+                                libusb_ref_device(usb_device);
+                                break;
+                            }
+                        }
+                    }
+
                     if(busnum == dev->subdevices[0]->busnum && devnum == dev->subdevices[0]->devnum)
                     {
-                        dev->usb_device = usb_device;
-                        libusb_ref_device(usb_device);
-                        break;
-                    }
+                        if (!dev->usb_device) // do not override previous configuration
+                        {
+                            dev->usb_device = usb_device;
+                            libusb_ref_device(usb_device);
+                            break;
+                        }
+                    }                    
                 }
             }
             libusb_free_device_list(list, 1);

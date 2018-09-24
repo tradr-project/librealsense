@@ -5,6 +5,8 @@
 // This set of tests is valid only for the SR300 camera //
 //////////////////////////////////////////////////////////
 
+#if !defined(MAKEFILE) || ( defined(LIVE_TEST) && defined(SR300_TEST) )
+
 #define CATCH_CONFIG_MAIN
 #include "catch/catch.hpp"
 
@@ -67,8 +69,7 @@ TEST_CASE( "SR300 devices support all required options", "[live] [sr300]" )
                 RS_OPTION_F200_ACCURACY,
                 RS_OPTION_F200_MOTION_RANGE,
                 RS_OPTION_F200_FILTER_OPTION,
-                RS_OPTION_F200_CONFIDENCE_THRESHOLD,
-                RS_OPTION_SR300_DYNAMIC_FPS,
+                RS_OPTION_F200_CONFIDENCE_THRESHOLD,                
                 RS_OPTION_SR300_AUTO_RANGE_ENABLE_MOTION_VERSUS_RANGE,
                 RS_OPTION_SR300_AUTO_RANGE_ENABLE_LASER,
                 RS_OPTION_SR300_AUTO_RANGE_MIN_MOTION_VERSUS_RANGE,
@@ -79,13 +80,8 @@ TEST_CASE( "SR300 devices support all required options", "[live] [sr300]" )
                 RS_OPTION_SR300_AUTO_RANGE_START_LASER,
                 RS_OPTION_SR300_AUTO_RANGE_UPPER_THRESHOLD,
                 RS_OPTION_SR300_AUTO_RANGE_LOWER_THRESHOLD,
-                RS_OPTION_SR300_WAKEUP_DEV_PHASE1_PERIOD,
-                RS_OPTION_SR300_WAKEUP_DEV_PHASE1_FPS,
-                RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD,
-                RS_OPTION_SR300_WAKEUP_DEV_PHASE2_FPS,
-                RS_OPTION_SR300_WAKEUP_DEV_RESET,
-                RS_OPTION_SR300_WAKE_ON_USB_REASON,
-                RS_OPTION_SR300_WAKE_ON_USB_CONFIDENCE
+                RS_OPTION_FRAMES_QUEUE_SIZE,
+                RS_OPTION_HARDWARE_LOGGER_ENABLED
             };
 
             for(int i=0; i<RS_OPTION_COUNT; ++i)
@@ -153,124 +149,115 @@ inline void test_sr300_streaming(std::initializer_list<stream_mode> modes)
 
     test_streaming(dev, modes);
 }
+///////////////////////////
+// Color streaming tests //
+///////////////////////////
+
+TEST_CASE("SR300 streams 1080p color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_COLOR, 1920, 1080, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams 720p color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_COLOR, 1280, 720, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams VGA color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams 720p color (60 fps)", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_COLOR, 1280, 720, RS_FORMAT_YUYV, 60 } });
+}
+
+TEST_CASE("SR300 streams VGA color (60 fps)", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 60 } });
+}
+
+TEST_CASE("SR300 streams VGA depth and HD color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60 },
+    { RS_STREAM_COLOR, 1920, 1080, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams HVGA depth and HD color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60 },
+    { RS_STREAM_COLOR, 1920, 1080, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams VGA depth and VGA color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60 },
+    { RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams HVGA depth and VGA color", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60 },
+    { RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 30 } });
+}
+
+TEST_CASE("SR300 streams VGA depth and VGA color (60 fps)", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60 },
+    { RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 60 } });
+}
+
+TEST_CASE("SR300 streams HVGA depth and VGA color (60 fps)", "[live] [sr300] [one-camera]")
+{
+    test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60 },
+    { RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 60 } });
+}
 
 ///////////////////////////
 // Depth streaming tests //
 ///////////////////////////
 
-TEST_CASE( "SR300 streams 640x480 depth", "[live] [sr300] [one-camera]" )
+TEST_CASE("SR300 depth stream (Z16)", "[live] [sr300] [one-camera]")
 {
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60}});
-}
+    SECTION("SR300 streams depth 640x480 (VGA), [10,30,60] fps")
+    {
+        for (auto & fps : { 10,30,60 })
+        {
+            INFO("Testing " << fps << " fps")
+            test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, fps } });
+        }
+    }
 
-TEST_CASE( "SR300 streams 640x240 depth", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60}});
-}
-
-TEST_CASE( "SR300 streams 640x480 depth (30 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 30}});
-}
-
-TEST_CASE( "SR300 streams 640x240 depth (30 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 30}});
-}
-
-TEST_CASE( "SR300 streams 640x240 depth (110 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 110}});
-}
-
-///////////////////////////
-// Color streaming tests //
-///////////////////////////
-
-TEST_CASE( "SR300 streams 1080p color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_COLOR, 1920, 1080, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams 720p color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_COLOR, 1280, 720, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams VGA color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams 720p color (60 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_COLOR, 1280, 720, RS_FORMAT_YUYV, 60}});
-}
-
-TEST_CASE( "SR300 streams VGA color (60 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 60}});
-}
-
-TEST_CASE( "SR300 streams VGA depth and HD color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60},
-                          {RS_STREAM_COLOR, 1920, 1080, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams HVGA depth and HD color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60},
-                          {RS_STREAM_COLOR, 1920, 1080, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams VGA depth and VGA color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60},
-                          {RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams HVGA depth and VGA color", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60},
-                          {RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 30}});
-}
-
-TEST_CASE( "SR300 streams VGA depth and VGA color (60 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60},
-                          {RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 60}});
-}
-
-TEST_CASE( "SR300 streams HVGA depth and VGA color (60 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, 60},
-                          {RS_STREAM_COLOR, 640, 480, RS_FORMAT_YUYV, 60}});
+    SECTION("SR300 streams depth 640x240 (HVGA), [10,30,60,110] fps")
+    {
+        for (auto & fps : { 10,30,60,110 })
+        {
+            INFO("Testing " << fps << " fps")
+            test_sr300_streaming({ { RS_STREAM_DEPTH, 640, 240, RS_FORMAT_Z16, fps } });
+        }
+    }
 }
 
 //////////////////////////////
 // Infrared streaming tests //
 //////////////////////////////
 
-TEST_CASE( "SR300 streams 640x480 infrared (30 fps)", "[live] [sr300] [one-camera]" )
+TEST_CASE( "SR300 infrared stream (Y16)", "[live] [sr300] [one-camera]" )
 {
-    test_sr300_streaming({{RS_STREAM_INFRARED, 640, 480, RS_FORMAT_Y16, 30}});
+    SECTION("SR300 streams infrared 640x240 depth (VGA), [30,60,120,200] fps")
+    {
+        for (auto & fps : { 30,60,120,200 })
+        {
+            INFO("Testing " << fps << " fps")
+            test_sr300_streaming({ { RS_STREAM_INFRARED, 640, 480, RS_FORMAT_Y16, fps } });
+        }
+    }
 }
 
-TEST_CASE( "SR300 streams 640x480 infrared (60 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_INFRARED, 640, 480, RS_FORMAT_Y16, 60}});
-}
-
-TEST_CASE( "SR300 streams 640x480 infrared (120 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_INFRARED, 640, 480, RS_FORMAT_Y16, 120}});
-}
-
-TEST_CASE( "SR300 streams 640x480 infrared (200 fps)", "[live] [sr300] [one-camera]" )
-{
-    test_sr300_streaming({{RS_STREAM_INFRARED, 640, 480, RS_FORMAT_Y16, 200}});
-}
+//////////////////////////////////////////
+// Multiple-stream configurations tests //
+//////////////////////////////////////////
 
 TEST_CASE( "SR300 streams 640x480 depth and infrared", "[live] [sr300] [one-camera]" )
 {
@@ -369,7 +356,7 @@ TEST_CASE( "SR300 supports RS_OPTION_F200_FILTER_OPTION", "[live] [sr300]" )
 
 TEST_CASE( "SR300 supports RS_OPTION_F200_CONFIDENCE_THRESHOLD", "[live] [sr300]" )
 {
-    test_sr300_option(RS_OPTION_F200_LASER_POWER, {0, 1, 2, 4, 8, 15}, AFTER_START_DEVICE);
+    test_sr300_option(RS_OPTION_F200_CONFIDENCE_THRESHOLD, {0, 1, 2, 4, 8, 15}, AFTER_START_DEVICE);
 }
 
 //////////////////////////////////////////
@@ -397,20 +384,24 @@ TEST_CASE( "a single SR300 can stream a variety of reasonable streaming mode com
 
     SECTION( "streaming is possible in some reasonable configurations" )
     {
+        INFO("Streaming Z16, 60 fps");
         test_streaming(dev, {
             {RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60}
         });
 
+        INFO("Streaming Depth + Color 60 fps");
         test_streaming(dev, {
             {RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60},
             {RS_STREAM_COLOR, 640, 480, RS_FORMAT_RGB8, 60}
         });
 
+        INFO("Streaming Depth + Infrared 60 fps");
         test_streaming(dev, {
             {RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60},
             {RS_STREAM_INFRARED, 640, 480, RS_FORMAT_Y16, 60}
         });
 
+        INFO("Streaming Depth + Infrared + Color 60 fps");
         test_streaming(dev, {
             {RS_STREAM_DEPTH, 640, 480, RS_FORMAT_Z16, 60},
             {RS_STREAM_COLOR, 640, 480, RS_FORMAT_RGB8, 60},
@@ -427,17 +418,17 @@ inline void test_options(rs_device * device, rs_option* option_list, size_t opti
         if (good_values.size() == options)
         {
             if (expected_success_msg.size())
-                rs_set_device_options(device, option_list, (int)options, good_values.data(), require_error(expected_success_msg));
+                rs_set_device_options(device, option_list, (unsigned int)options, good_values.data(), require_error(expected_success_msg));
             else
-                rs_set_device_options(device, option_list, (int)options, good_values.data(), require_no_error());
+                rs_set_device_options(device, option_list, (unsigned int)options, good_values.data(), require_no_error());
         }
 
         if (bad_values.size() == options)
         {
             if (expected_error_msg.size())
-                rs_set_device_options(device, option_list, (int)options, bad_values.data(), require_error(expected_error_msg));
+                rs_set_device_options(device, option_list, (unsigned int)options, bad_values.data(), require_error(expected_error_msg));
             else
-                rs_set_device_options(device, option_list, (int)options, bad_values.data(), require_no_error());
+                rs_set_device_options(device, option_list, (unsigned int)options, bad_values.data(), require_no_error());
         }
     }
     else // Read command
@@ -445,12 +436,12 @@ inline void test_options(rs_device * device, rs_option* option_list, size_t opti
         std::vector<double> vretVal;
         vretVal.resize(options);
         if (expected_success_msg.size())
-            rs_get_device_options(device, option_list, (int)options, vretVal.data(), require_error(expected_success_msg));
+            rs_get_device_options(device, option_list, (unsigned int)options, vretVal.data(), require_error(expected_success_msg));
         else
-            rs_get_device_options(device, option_list, (int)options, vretVal.data(), require_no_error());
+            rs_get_device_options(device, option_list, (unsigned int)options, vretVal.data(), require_no_error());
 
         // Results to be returned
-        ret_values = vretVal;       
+        ret_values = vretVal;
     }
 }
 
@@ -484,90 +475,4 @@ inline void test_sr300_command(rs_device *dev, std::vector<rs_option> options_li
     }
 }
 
-TEST_CASE("SR300 Wakeup over USB function", "[live] [sr300]")
-{
-    std::vector<rs_option> vSetWakeupDevCmd;
-    std::vector<rs_option> vGetWakeUpDevCmd;
-
-    std::vector<std::vector<double>> vGoodParams;
-    std::vector<std::vector<double>> vBadParams;
-    std::vector<double> vRetValues;
-
-    std::string strSuccessMsg = ("");
-    std::string strErrorMsg = ("missing/invalid wake_up command parameters");
-
-    safe_context ctx;
-    REQUIRE(rs_get_device_count(ctx, require_no_error()) == 1);
-
-    rs_device * dev = rs_get_device(ctx, 0, require_no_error());
-    REQUIRE(dev != nullptr);
-
-    SECTION("Minimal Main Success Scenario")
-    {
-        vSetWakeupDevCmd = { RS_OPTION_SR300_WAKEUP_DEV_PHASE1_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE1_FPS, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_FPS };
-        vGetWakeUpDevCmd = { RS_OPTION_SR300_WAKE_ON_USB_REASON, RS_OPTION_SR300_WAKE_ON_USB_CONFIDENCE };
-
-        //phase1Period  phase1FPS   phase2Period phase2FPS
-        vGoodParams = { { 500, 2, 200, 3 } };
-        vBadParams = {};              // second and forth parameters are invalid
-    }
-
-    SECTION("Main Success Scenario Extended")
-    {
-        vSetWakeupDevCmd = { RS_OPTION_SR300_WAKEUP_DEV_PHASE1_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE1_FPS, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_FPS };
-        vGetWakeUpDevCmd = { RS_OPTION_SR300_WAKE_ON_USB_REASON, RS_OPTION_SR300_WAKE_ON_USB_CONFIDENCE };
-
-        //phase1Period  phase1FPS   phase2Period phase2FPS
-        vGoodParams = {
-            { 500, 2, 200, 3 },
-            { 5000, 1, 456, 2 } };
-        vBadParams = {
-            { 0xffffffff, 0, 3, 6 },       // first parameter is invalid
-            { 1, 32, 3, 6 },               // second parameter is invalid : enum in range [0-3]
-            { 1, 2, 3, 6 },                // fourth parameter is invalid : enum in range [0-3]
-            { 1, 2, 3, 6 } };              // second and forth parameters are invalid
-    }
-
-    SECTION("Negative Tests: Ill-formed commands")
-    {
-        SECTION("WAKEUP_DEV_PHASE1_PERIOD option is undefined")
-        {
-            vSetWakeupDevCmd = { RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE1_FPS, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_FPS };
-        }
-
-        SECTION("number of command options does not correspond to the number of assignment values")
-        {
-            vSetWakeupDevCmd = { RS_OPTION_SR300_WAKEUP_DEV_PHASE1_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE1_FPS, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_PERIOD, RS_OPTION_SR300_WAKEUP_DEV_PHASE2_FPS };
-        }
-
-        strSuccessMsg = ("missing/invalid wake_up command parameters");    // Eventhought the parameters are correct we'd expect the test to fail due to invalid command options specification
-
-        vGetWakeUpDevCmd = { RS_OPTION_SR300_WAKE_ON_USB_REASON, RS_OPTION_SR300_WAKE_ON_USB_CONFIDENCE };
-        vGoodParams = { { 500, 2, 200, 3 } };
-        vBadParams = {};
-    }
-
-    // Apply set command in different scenarios
-    for (auto &data : vGoodParams)
-    {
-        test_sr300_command(dev, vSetWakeupDevCmd, data, {}, vRetValues, strSuccessMsg, strErrorMsg, BEFORE_START_DEVICE, true);
-        test_sr300_command(dev, vSetWakeupDevCmd, data, {}, vRetValues, strSuccessMsg, strErrorMsg, AFTER_START_DEVICE, true);
-    }
-
-    for (auto &data : vBadParams)
-    {
-        test_sr300_command(dev, vSetWakeupDevCmd, {}, data, vRetValues, strSuccessMsg, strErrorMsg, BEFORE_START_DEVICE, true);
-        test_sr300_command(dev, vSetWakeupDevCmd, {}, data, vRetValues, strSuccessMsg, strErrorMsg, AFTER_START_DEVICE, true);
-    }
-
-    // Revert to original messages
-    strSuccessMsg = ("");
-    strErrorMsg = ("missing/invalid wake_up command parameters");
-    
-    test_sr300_command(dev, vGetWakeUpDevCmd, {}, {}, vRetValues, strSuccessMsg, strErrorMsg, BEFORE_START_DEVICE, false);
-    test_sr300_command(dev, vGetWakeUpDevCmd, {}, {}, vRetValues, strSuccessMsg, strErrorMsg, AFTER_START_DEVICE, false);
-
-    REQUIRE(((vRetValues[0] == Approx(1.0)) || ((int)vRetValues[0] == Approx(0))) == true );
-    REQUIRE(((vRetValues[1] >= 0) && (vRetValues[1] <= 100) && ( 0 == (int)vRetValues[1]%10))== true);
-    
-}
+#endif /* !defined(MAKEFILE) || ( defined(LIVE_TEST) && defined(SR300_TEST) ) */
